@@ -76,6 +76,7 @@ int main(int argc, char **argv) {
 	char *mapfile, *output, *prelinkmap;
     int start_addr, inc_addr, locals_only, num_lookup_dirs, 
         num_default_libs, dry_run;
+    int alloc_ratio, alloc_align;
     int first = get_options(argc, argv,
                             &start_addr, &inc_addr, &locals_only,
                             &quiet_flag,
@@ -85,6 +86,8 @@ int main(int argc, char **argv) {
                             &verbose_flag,
 							&mapfile,
                             &output,
+                            &alloc_ratio,
+                            &alloc_align,
                             &prelinkmap);
 
     /* Perform some command-line-parameter checks. */
@@ -103,8 +106,8 @@ int main(int argc, char **argv) {
        we do not know what the case is.  We find that out when we call function
        init_source().
     */
-    if (!locals_only && start_addr == -1) {
-        ERROR("You must specify --start-addr!\n");
+    if ((!locals_only && start_addr == -1) && prelinkmap == NULL) {
+        ERROR("You must specify --start-addr or --prelinkmap!\n");
         cmdline_err++;
     }
     if (start_addr == -1 && inc_addr != -1) {
@@ -175,7 +178,7 @@ int main(int argc, char **argv) {
     FAILIF (elf_version(EV_CURRENT) == EV_NONE, "libelf is out of date!\n");
 
 	if (inc_addr < 0) {
-        if (!locals_only)
+        if (!locals_only && prelinkmap == NULL)
             PRINT("User has not provided an increment address, "
                   "will use library size to calculate successive "
                   "prelink addresses.\n");
@@ -208,6 +211,7 @@ int main(int argc, char **argv) {
             dry_run,
             lookup_dirs, num_lookup_dirs,
             default_libs, num_default_libs,
+            alloc_ratio, alloc_align,
 			mapfile);
 
 	FREEIF(mapfile);

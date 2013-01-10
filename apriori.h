@@ -9,6 +9,7 @@ void apriori(char **execs, int num_execs,
              int dry_run,
              char **lib_lookup_dirs, int num_lib_lookup_dirs,
              char **default_libs, int num_default_libs,
+             int alloc_ratio, int alloc_align,
 			 char *mapfile);
 
 #endif

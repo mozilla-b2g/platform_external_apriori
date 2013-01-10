@@ -16,6 +16,8 @@ int get_options(int argc, char **argv,
                 int *verbose,
 				char **mapfile,
                 char **output,
+                int *alloc_ratio,
+                int *alloc_align,
                 char **prelinkmap);
 
 #endif/*CMDLINE_H*/

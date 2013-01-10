@@ -22,6 +22,8 @@ static struct option long_options[] = {
 	{"mapfile",       required_argument, 0, 'M'},
 	{"output",        required_argument, 0, 'o'},
     {"prelinkmap",    required_argument, 0, 'p'},
+    {"alloc-ratio",      required_argument, 0, 'r'},
+    {"alloc-alignment",  required_argument, 0, 'a'},
     {0, 0, 0, 0},
 };
 
@@ -39,6 +41,8 @@ static const char *descriptions[] = {
 	"print a list of prelink addresses to file (prefix filename with + to append instead of overwrite)",
     "specify an output directory (if multiple inputs) or file (is single input)",
     "specify a file with prelink addresses instead of a --start-address/--inc-address combination",
+    "ratios of allocated space to loaded sizes of libraries",
+    "alignments of allocated space for libraries",
 };
 
 void print_help(const char *name) {
@@ -74,6 +78,8 @@ int get_options(int argc, char **argv,
                 int *verbose,
 				char **mapfile,
                 char **output,
+                int *alloc_ratio,
+                int *alloc_align,
                 char **prelinkmap) {
     int c;
 
@@ -90,6 +96,8 @@ int get_options(int argc, char **argv,
 	ASSERT(mapfile); *mapfile = NULL;
 	ASSERT(output); *output = NULL;
     ASSERT(prelinkmap); *prelinkmap = NULL;
+    ASSERT(alloc_ratio); *alloc_ratio = 2;
+    ASSERT(alloc_align); *alloc_align = 0x100000; // 1MB
     int dirs_size = 0;
     int defaults_size = 0;
 
@@ -98,7 +106,7 @@ int get_options(int argc, char **argv,
         int option_index = 0;
 
         c = getopt_long (argc, argv,
-                         "VhnQlL:D:s:i:M:o:p:",
+                         "VhnQlL:D:s:i:M:o:p:r:a:",
                          long_options,
                          &option_index);
         /* Detect the end of the options. */
@@ -165,6 +173,12 @@ int get_options(int argc, char **argv,
             break;
         case 'D':
             SET_REPEATED_STRING_OPTION(defaults, num_defaults, defaults_size);
+            break;
+        case 'r':
+            SET_INT_OPTION(alloc_ratio);
+            break;
+        case 'a':
+            SET_INT_OPTION(alloc_align);
             break;
         case 'l': *locals_only = 1; break;
         case 'h': print_help(argv[0]); exit(1); break;

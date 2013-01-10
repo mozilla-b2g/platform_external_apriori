@@ -295,8 +295,10 @@ static void setup_shdr_info(source_t *source)
                        "Cannot handle sh_type SHT_SYMTAB_SHNDX!\n");
                 FAILIF(source->shdr_info[cnt].shdr.sh_type == SHT_GROUP,
                        "Cannot handle sh_type SHT_GROUP!\n");
+#ifndef IGNORE_VERSYM
                 FAILIF(source->shdr_info[cnt].shdr.sh_type == SHT_GNU_versym,
                        "Cannot handle sh_type SHT_GNU_versym!\n");
+#endif
             }
 
             cnt++;
@@ -910,9 +912,10 @@ static GElf_Sym *hash_lookup_global_or_weak_symbol(source_t *lib,
     return NULL;
 }
 
-static source_t *lookup_symbol_in_dependencies(source_t *source,
-                                               const char *symname,
-                                               GElf_Sym *found_sym)
+static int lookup_symbol_in_dependencies(source_t *source,
+                                         const char *symname,
+                                         source_t **sym_source_out,
+                                         GElf_Sym *found_sym)
 {
     source_t *sym_source = NULL; /* return value */
 
@@ -926,17 +929,16 @@ static source_t *lookup_symbol_in_dependencies(source_t *source,
         if (hash_lookup_global_or_weak_symbol(lib, symname, found_sym) != NULL)
         {
             sym_source = lib;
-            if (found) {
+            if (found > 0) {
                 if (found == 1) {
-                    found++;
-                    ERROR("ERROR: multiple definitions found for [%s:%s]!\n",
+                    INFO("INFO: multiple definitions found for [%s:%s]!\n",
                           source->name, symname);
-                    ERROR("\tthis definition     [%s]\n", lib->name);
+                    INFO("\tthis definition     [%s]\n", lib->name);
                 }
-                ERROR("\tprevious definition [%s]\n", last_found->name);
+                INFO("\tprevious definition [%s]\n", last_found->name);
             }
+            found++;
             last_found = lib;
-            if (!found) found = 1;
         }
     }
 
@@ -956,7 +958,79 @@ static source_t *lookup_symbol_in_dependencies(source_t *source,
                               found_sym->st_name)));
 #endif
 
-    return sym_source;
+    *sym_source_out = sym_source;
+    return found;
+}
+
+static unsigned int ceilX(unsigned int i, unsigned int x)
+{
+    if (x & (x - 1)) {
+        return (i + x - 1) / x * x; // x could never be 0.
+    } else {
+        return (i + x - 1) & ~(x - 1);
+    }
+}
+
+static unsigned int floorX(unsigned int i, unsigned int x)
+{
+    if (x & (x - 1)) {
+        return i / x * x; // x could never be 0.
+    } else {
+        return i & ~(x - 1);
+    }
+}
+
+static int lookup_symbol_in_defaults(source_t *source,
+                                     const char *symname,
+                                     source_t **sym_source_out,
+                                     GElf_Sym *found_sym,
+                                     char **lib_lookup_dirs,
+                                     int num_lib_lookup_dirs,
+                                     char **default_libs,
+                                     int num_default_libs)
+{
+    INFO("\t\tChecking default dependencies...\n");
+    int i;
+    int found = 0;
+    source_t *sym_source = NULL;
+    source_t *last_found = NULL;
+    for (i = 0; i < num_default_libs; i++) {
+        INFO("\tChecking in [%s].\n", default_libs[i]);
+        source_t *lib = find_source(default_libs[i], lib_lookup_dirs, num_lib_lookup_dirs);
+        FAILIF(NULL == lib, "Can't find default library [%s]!\n", default_libs[i]);
+        if (hash_lookup_global_or_weak_symbol(lib, symname, found_sym) != NULL) {
+            sym_source = lib;
+            if (found > 0) {
+                if (found == 1) {
+                    INFO("INFO: multiple definitions found for [%s:%s]!\n",
+                          source->name, symname);
+                    INFO("\tthis definition     [%s]\n", lib->name);
+                }
+                INFO("\tprevious definition [%s]\n", last_found->name);
+            }
+            found++;
+            last_found = lib;
+        }
+    }
+
+#if ELF_STRPTR_IS_BROKEN
+    ASSERT(!sym_source ||
+           !strcmp(symname,
+                   (char *)(elf_getdata(elf_getscn(
+                                            sym_source->elf,
+                                            sym_source->symtab.shdr.sh_link),
+                                        NULL)->d_buf) +
+                   found_sym->st_name));
+#else
+    ASSERT(!sym_source ||
+           !strcmp(symname,
+                   elf_strptr(sym_source->elf,
+                              sym_source->symtab.shdr.sh_link,
+                              found_sym->st_name)));
+#endif
+
+    *sym_source_out = sym_source;
+    return found;
 }
 
 static int do_prelink(source_t *source,
@@ -979,6 +1053,7 @@ static int do_prelink(source_t *source,
     int rel_idx;
     for (rel_idx = 0; rel_idx < (size_t)num_rels; rel_idx++) {
         GElf_Rel *rel, rel_mem;
+        bool skip_this = false; // Leave it to dynamic linker.
 
         //INFO("\tHandling relocation %d/%d\n", rel_idx, num_rels);
 
@@ -1040,119 +1115,45 @@ static int do_prelink(source_t *source,
             found_sym = sym;
           }
           else if (!locals_only) {
-            sym_source = lookup_symbol_in_dependencies(source,
-                                                       symname,
-                                                       &found_sym_mem);
+            source_t *sym_source_dep = NULL;
+            source_t *sym_source_def = NULL;
+            GElf_Sym found_sym_dep;
+            GElf_Sym found_sym_def;
+            int n_found_in_dep = 0;
+            int n_found_in_def = 0;
 
-            /* The symbol was not in the list of dependencies, which by
-               itself is an error:  it means either that the symbol does
-               not exist anywhere, or that the library which has the symbol
-               has not been listed as a dependency in this library or
-               executable. It could also mean (for a library) that the
-               symbol is defined in the executable that links agsinst it,
-               which is obviously not a good thing.  These are bad things,
-               but they do happen, which is why we have the ability to
-               provide a list of default dependencies, including
-               executables. Here we check to see if the symbol has been
-               defined in any of them.
-            */
-            if (NULL == sym_source) {
-              INFO("\t\tChecking default dependencies...\n");
-              int i;
-              source_t *lib, *old_sym_source = NULL;
-              int printed_initial_error = 0;
-              for (i = 0; i < num_default_libs; i++) {
-                INFO("\tChecking in [%s].\n", default_libs[i]);
-                lib = find_source(default_libs[i],
-                                  lib_lookup_dirs,
-                                  num_lib_lookup_dirs);
-                FAILIF(NULL == lib,
-                       "Can't find default library [%s]!\n",
-                       default_libs[i]);
-                if (hash_lookup_global_or_weak_symbol(lib,
-                                                      symname,
-                                                      &found_sym_mem)) {
-                  found_sym = &found_sym_mem;
-                  sym_source = lib;
-#if ELF_STRPTR_IS_BROKEN
-                  ASSERT(!strcmp(symname,
-                                 (char *)(elf_getdata(
-                                              elf_getscn(
-                                                  sym_source->elf,
-                                                  sym_source->symtab.
-                                                      shdr.sh_link),
-                                              NULL)->d_buf) +
-                                 found_sym->st_name));
-#else
-                  ASSERT(!strcmp(symname,
-                                 elf_strptr(sym_source->elf,
-                                            sym_source->symtab.shdr.sh_link,
-                                            found_sym->st_name)));
+            n_found_in_dep = lookup_symbol_in_dependencies(source, symname,
+                                                           &sym_source_dep, &found_sym_dep);
+            n_found_in_def = lookup_symbol_in_defaults(source, symname,
+                                                       &sym_source_def, &found_sym_def,
+                                                       lib_lookup_dirs, num_lib_lookup_dirs,
+                                                       default_libs, num_default_libs);
 
+#ifdef IGNORE_MULDEF
+            /*
+             * Leave multiple definitions to the dynamic linker.
+             * This is a workaround to LD_PRELOAD=libmozglue.so.
+             * Note that sym_source_*->name are full path names.
+             */
+            if ((n_found_in_dep == 1 && n_found_in_def == 0) ||
+                (n_found_in_dep == 0 && n_found_in_def == 1) ||
+                (n_found_in_dep == 1 && n_found_in_def == 1 &&
+                 strcmp(sym_source_def->name, sym_source_dep->name) == 0))
 #endif
-                  INFO("\tFound symbol [%s] in [%s]!\n",
-                       symname, lib->name);
-                  if (old_sym_source) {
-                    if (printed_initial_error == 0) {
-                      printed_initial_error = 1;
-                      ERROR("Multiple definition of [%s]:\n"
-                            "\t[%s]\n",
-                            symname,
-                            old_sym_source->name);
-                    }
-                    ERROR("\t[%s]\n", sym_source->name);
-                  }
-                  old_sym_source = sym_source;
-                } else {
-                  INFO("\tCould not find symbol [%s] in default "
-                       "lib [%s]!\n", symname, lib->name);
-                }
+            {
+              if (n_found_in_dep > 0) {
+                sym_source = sym_source_dep;
+                found_sym = &found_sym_dep;
+              } else if (n_found_in_def > 0) {
+                sym_source = sym_source_dep;
+                found_sym = &found_sym_dep;
               }
-              if (sym_source) {
-                ERROR("ERROR: Could not find [%s:%s] in dependent "
-                      "libraries (but found in default [%s])!\n",
-                      source->name,
-                      symname,
-                      sym_source->name);
-              }
-            } else {
-              found_sym = &found_sym_mem;
-              /* We found the symbol in a dependency library. */
-              INFO("\t\tSymbol [%s:%s, value %lld] is imported from [%s]\n",
-                   source->name,
-                   symname,
-                   found_sym->st_value,
-                   sym_source->name);
             }
-          } /* if symbol is defined in this library... */
 
-          if (!locals_only) {
-            /* If a symbol is weak and we haven't found it, then report
-               an error.  We really need to find a way to set its value
-               to zero.  The problem is that it needs to refer to some
-               section. */
-
-            FAILIF(NULL == sym_source &&
-                   GELF_ST_BIND(sym->st_info) == STB_WEAK,
-                   "Cannot handle weak symbols yet (%s:%s <- %s).\n",
-                   source->name,
-                   symname,
-                   sym_source->name);
-#ifdef PERMISSIVE
-            if (GELF_ST_BIND(sym->st_info) != STB_WEAK &&
-                NULL == sym_source) {
-              ERROR("ERROR: Can't find symbol [%s:%s] in dependent or "
-                    "default libraries!\n", source->name, symname);
-            }
-#else
-            FAILIF(GELF_ST_BIND(sym->st_info) != STB_WEAK &&
-                   NULL == sym_source,
-                   "Can't find symbol [%s:%s] in dependent or default "
-                   "libraries!\n",
-                   source->name,
-                   symname);
-#endif
-          } /* if (!locals_only) */
+            /* Leave undefined symbols and weak symbols to dynamic linker. */
+            if (sym_source == NULL)
+                skip_this = true;
+          }
         }
 #if 0 // too chatty
         else
@@ -1168,11 +1169,14 @@ static int do_prelink(source_t *source,
              (!strcmp(symname + 2, "open") ||
               !strcmp(symname + 2, "close") ||
               !strcmp(symname + 2, "sym") ||
+              !strcmp(symname + 2, "addr") ||
+              !strcmp(symname + 2, "_unwind_find_exidx") ||
               !strcmp(symname + 2, "error")))) {
             INFO("********* NOT RELOCATING LIBDL SYMBOL [%s]\n", symname);
             can_relocate = false;
         }
 
+        can_relocate = can_relocate && !skip_this;
         if (can_relocate && (sym_is_local || !locals_only))
         {
             GElf_Shdr shdr_mem; Elf_Scn *scn; Elf_Data *data;
@@ -1539,11 +1543,11 @@ static char * find_file(const char *libname,
 
             char *name;
             while (num_lib_lookup_dirs--) {
-                size_t lib_len = strlen(*lib_lookup_dirs);
+                size_t lib_len = strlen(*(lib_lookup_dirs + num_lib_lookup_dirs));
                 /* one extra character for the slash, and another for the
                    terminating NULL. */
                 name = (char *)MALLOC(lib_len + strlen(libname) + 2);
-                strcpy(name, *lib_lookup_dirs);
+                strcpy(name, *(lib_lookup_dirs + num_lib_lookup_dirs));
                 name[lib_len] = '/';
                 strcpy(name + lib_len + 1, libname);
                 if ((fd = open(name, O_RDONLY)) > 0) {
@@ -2076,6 +2080,7 @@ static source_t* process_file(const char *filename,
                               char **default_libs,
                               int num_default_libs,
                               int dry_run,
+                              int alloc_ratio, int alloc_align,
                               int *total_num_handled_relocs,
                               int *total_num_unhandled_relocs)
 {
@@ -2124,52 +2129,33 @@ static source_t* process_file(const char *filename,
             (!locals_only ||
              report_library_size_in_memory == 
              pm_report_library_size_in_memory)) {
-            /* This sets the next link address only if an increment was not
-               specified by the user.  If an address increment was specified,
-               then we just check to make sure that the file size is less than
-               the increment.
+            unsigned long fsize = 0;
+            unsigned long max_vaddr = 0;
+            unsigned long min_vaddr = 0xffffffff;
+            int cnt;
+            GElf_Phdr *phdr;
 
-               NOTE: The file size is the absolute highest number of bytes that
-               the file may occupy in memory, if the entire file is loaded, but
-               this is almost next the case.  A file will often have sections
-               which are not loaded, which could add a lot of size.  That's why
-               we start off with the file size and then subtract the size of
-               the biggest sections that will not get loaded, which are the
-               varios DWARF sections, all of which of which are named starting
-               with ".debug_".
+            phdr = source->phdr_info;
 
-               We could do better than this (by caculating exactly how many
-               bytes from that file will be loaded), but that's an overkill.
-               Unless the prelink-address increment becomes too small, the file
-               size after subtracting the sizes of the DWARF section will be a
-               good-enough upper bound.
-            */
-
-            unsigned long fsize = source->elf_file_info.st_size;
-            INFO("Calculating loadable file size for next link address.  "
-                 "Starting with %ld.\n", fsize);
-            if (true) {
-                Elf_Scn *scn = NULL;
-                GElf_Shdr shdr_mem, *shdr;
-                const char *scn_name;
-                while ((scn = elf_nextscn (source->oldelf, scn)) != NULL) {
-                    shdr = gelf_getshdr(scn, &shdr_mem);
-                    FAILIF_LIBELF(NULL == shdr, gelf_getshdr);
-                    scn_name = elf_strptr (source->oldelf,
-                                           source->shstrndx, shdr->sh_name);
-                    ASSERT(scn_name != NULL);
-
-                    if (!(shdr->sh_flags & SHF_ALLOC)) {
-                        INFO("\tDecrementing by %lld on account of section "
-                             "[%s].\n",
-                             shdr->sh_size,
-                             scn_name);
-                        fsize -= shdr->sh_size;
-                    }                    
+            for (cnt = 0; cnt < source->ehdr_mem.e_phnum; ++cnt, ++phdr) {
+                if (phdr->p_type == PT_LOAD) {
+                    unsigned long high, low;
+                    high = ceilX(phdr->p_vaddr + phdr->p_memsz, phdr->p_align);
+                    low = floorX(phdr->p_vaddr, phdr->p_align);
+                    if (high > max_vaddr)
+                        max_vaddr = high;
+                    if (low < min_vaddr)
+                        min_vaddr = low;
                 }
             }
-            INFO("Done calculating loadable file size for next link address: "
-                 "Final value is %ld.\n", fsize);
+
+            if ((min_vaddr == 0xffffffff) && (max_vaddr == 0)) {
+                // No loadable segments.
+                fsize = 0;
+            } else {
+                fsize = ceilX((max_vaddr - min_vaddr) * alloc_ratio, alloc_align);
+            }
+
             report_library_size_in_memory(source->name, fsize);
         }
 
@@ -2227,6 +2213,7 @@ static source_t* process_file(const char *filename,
                                                  default_libs,
                                                  num_default_libs,
                                                  dry_run,
+                                                 alloc_ratio, alloc_align,
                                                  total_num_handled_relocs,
                                                  total_num_unhandled_relocs);
 
@@ -2448,24 +2435,6 @@ static source_t* process_file(const char *filename,
             *total_num_handled_relocs += num_relocs;
             *total_num_unhandled_relocs += num_unfinished_relocs;
 
-            if(num_unfinished_relocs != 0 &&
-               source->elf_hdr.e_type != ET_EXEC &&
-               !locals_only)
-            {
-                /* One reason you could have unfinished relocations in an
-                   executable file is if this file used dlopen() and friends.
-                   We do not adjust relocation entries to those symbols,
-                   because libdl is a dummy only--the real functions are
-                   provided for by the dynamic linker itsef.
-
-                   NOTE FIXME HACK:  This is specific to the Android dynamic
-                   linker, and may not be true in other cases.
-                */
-                PRINT("WARNING: Expecting to have unhandled relocations only "
-                      "for executables (%s is not an executable)!\n",
-                      source->name);
-            }
-
             match_relocation_sections_to_dynamic_ranges(source);
 
             /* Now, for each relocation section, check to see if its address
@@ -2515,6 +2484,7 @@ void apriori(char **execs, int num_execs,
              int dry_run,
              char **lib_lookup_dirs, int num_lib_lookup_dirs,
              char **default_libs, int num_default_libs,
+             int alloc_ratio, int alloc_align,
 			 char *mapfile)
 {
     source_t *source; /* for general usage */
@@ -2541,6 +2511,7 @@ void apriori(char **execs, int num_execs,
                      lib_lookup_dirs, num_lib_lookup_dirs,
                      default_libs, num_default_libs,
                      dry_run,
+                     alloc_ratio, alloc_align,
                      &total_num_handled_relocs,
                      &total_num_unhandled_relocs);
         /* if source is NULL, then the respective executable is static */
@@ -2577,10 +2548,9 @@ void apriori(char **execs, int num_execs,
             /* If it's a library, print the results. */
             if (source->elf_hdr.e_type == ET_DYN) {
                 /* Add to the memory map file. */
-				fprintf(fp, "%s 0x%08lx %lld\n",
+				fprintf(fp, "%s 0x%08lx\n",
 						basename(source->name),
-						source->base,
-						source->elf_file_info.st_size);
+						source->base);
             }
             source = source->next;
         }
