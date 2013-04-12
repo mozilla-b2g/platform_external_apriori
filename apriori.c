@@ -997,7 +997,10 @@ static int lookup_symbol_in_defaults(source_t *source,
     for (i = 0; i < num_default_libs; i++) {
         INFO("\tChecking in [%s].\n", default_libs[i]);
         source_t *lib = find_source(default_libs[i], lib_lookup_dirs, num_lib_lookup_dirs);
-        FAILIF(NULL == lib, "Can't find default library [%s]!\n", default_libs[i]);
+        if (lib == NULL) {
+            INFO("Can't find default library [%s]. It will not be prelinked!\n", default_libs[i]);
+            continue;
+        }
         if (hash_lookup_global_or_weak_symbol(lib, symname, found_sym) != NULL) {
             sym_source = lib;
             if (found > 0) {
@@ -2106,6 +2109,11 @@ static source_t* process_file(const char *filename,
 
         unsigned base = get_next_link_address(full);
 
+        if (base == NULL) {
+            INFO("Unable to get the link address for [%s].\n", filename);
+            return NULL;
+        }
+
         source = init_source(full, output, is_file, base, dry_run);
 
         if (source == NULL) {
@@ -2217,14 +2225,16 @@ static source_t* process_file(const char *filename,
                                                  total_num_handled_relocs,
                                                  total_num_unhandled_relocs);
 
-                    /* Add the library to the dependency list. */
-                    if (source->num_lib_deps == source->lib_deps_size) {
-                        source->lib_deps_size += 10;
-                        source->lib_deps = REALLOC(source->lib_deps,
-                                                   source->lib_deps_size *
-                                                   sizeof(source_t *));
+                    if (dep != NULL) {
+                        /* Add the library to the dependency list. */
+                        if (source->num_lib_deps == source->lib_deps_size) {
+                            source->lib_deps_size += 10;
+                            source->lib_deps = REALLOC(source->lib_deps,
+                                    source->lib_deps_size *
+                                    sizeof(source_t *));
+                        }
+                        source->lib_deps[source->num_lib_deps++] = dep;
                     }
-                    source->lib_deps[source->num_lib_deps++] = dep;
                 }
                 break;
             case DT_JMPREL:

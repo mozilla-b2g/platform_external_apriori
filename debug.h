@@ -82,6 +82,12 @@ static inline void FREEIF(void *ptr) {
         fprintf(stdout, ##x);                         \
 } while(0)
 
+#define WARN(x...)  do {                              \
+    extern int verbose_flag;                          \
+    fprintf(stdout, "WARNING: ");                     \
+    fprintf(stdout, ##x);                             \
+} while(0)
+
 /* Prints a hex and ASCII dump of the selected buffer to the selected stream. */
 int dump_hex_buffer(FILE *s, void *b, size_t l, size_t elsize);
 

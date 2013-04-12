@@ -148,7 +148,7 @@ void pm_report_library_size_in_memory(const char *name,
         }
     }
     
-    FAILIF(1, "library '%s' not in prelink map\n", name);
+    INFO("Library '%s' is not in prelink map.\n", name);
 }
 
 unsigned pm_get_next_link_address(const char *lookup_name)
@@ -165,6 +165,6 @@ unsigned pm_get_next_link_address(const char *lookup_name)
             if(!strcmp(lookup_name, me->names[n]))
                 return me->base;
 
-    FAILIF(1, "library '%s' not in prelink map\n", lookup_name);
+    WARN("Library '%s' is not in the prelink map and will not be prelinked!\n", lookup_name);
     return 0;
 }
