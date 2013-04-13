@@ -121,7 +121,21 @@ static inline source_t* find_source(const char *name,
 
 static inline void add_to_sources(source_t *src) {
     src->next = sources;
+    src->prev = NULL;
+    if (sources)
+        sources->prev = src;
     sources = src;
+}
+
+static inline void del_from_sources(source_t *src) {
+    source_t *next = src->next;
+    source_t *prev = src->prev;
+    if (next)
+        next->prev = prev;
+    if (prev)
+        prev->next = next;
+    if (src == sources)
+        sources = next;
 }
 
 static void handle_range_error(range_error_t err,
@@ -802,6 +816,7 @@ static void destroy_source(source_t *source)
     if (source->output_is_dir > 1) {
         FREE(source->output);
     }
+    del_from_sources(source);
     FREE(source); /* init_source() */
 }
 
@@ -997,7 +1012,10 @@ static int lookup_symbol_in_defaults(source_t *source,
     for (i = 0; i < num_default_libs; i++) {
         INFO("\tChecking in [%s].\n", default_libs[i]);
         source_t *lib = find_source(default_libs[i], lib_lookup_dirs, num_lib_lookup_dirs);
-        FAILIF(NULL == lib, "Can't find default library [%s]!\n", default_libs[i]);
+        if (lib == NULL) {
+            INFO("Can't find default library [%s]. It will not be prelinked!\n", default_libs[i]);
+            continue;
+        }
         if (hash_lookup_global_or_weak_symbol(lib, symname, found_sym) != NULL) {
             sym_source = lib;
             if (found > 0) {
@@ -1067,6 +1085,8 @@ static int do_prelink(source_t *source,
            not locally defined and sym_source == NULL, then sym is not
            defined either. */
         GElf_Sym *found_sym = NULL, found_sym_mem;
+        GElf_Sym found_sym_dep;
+        GElf_Sym found_sym_def;
         const char *symname = NULL;
         int sym_is_local = 1;
         if (sym_idx) {
@@ -1117,8 +1137,6 @@ static int do_prelink(source_t *source,
           else if (!locals_only) {
             source_t *sym_source_dep = NULL;
             source_t *sym_source_def = NULL;
-            GElf_Sym found_sym_dep;
-            GElf_Sym found_sym_def;
             int n_found_in_dep = 0;
             int n_found_in_def = 0;
 
@@ -1145,8 +1163,8 @@ static int do_prelink(source_t *source,
                 sym_source = sym_source_dep;
                 found_sym = &found_sym_dep;
               } else if (n_found_in_def > 0) {
-                sym_source = sym_source_dep;
-                found_sym = &found_sym_dep;
+                sym_source = sym_source_def;
+                found_sym = &found_sym_def;
               }
             }
 
@@ -2070,7 +2088,7 @@ static void drop_sections(source_t *source)
 
 static source_t* process_file(const char *filename,
                               const char *output, int is_file,
-                              void (*report_library_size_in_memory)(
+                              int (*report_library_size_in_memory)(
                                   const char *name, off_t fsize),
                               unsigned (*get_next_link_address)(
                                   const char *name),
@@ -2105,6 +2123,11 @@ static source_t* process_file(const char *filename,
                "the search paths!\n", filename);
 
         unsigned base = get_next_link_address(full);
+
+        if (base == NULL) {
+            INFO("Unable to get the link address for [%s].\n", filename);
+            return NULL;
+        }
 
         source = init_source(full, output, is_file, base, dry_run);
 
@@ -2156,7 +2179,13 @@ static source_t* process_file(const char *filename,
                 fsize = ceilX((max_vaddr - min_vaddr) * alloc_ratio, alloc_align);
             }
 
-            report_library_size_in_memory(source->name, fsize);
+            if (report_library_size_in_memory(source->name, fsize) != 0) {
+                // something wrong. not prelinking this.
+                // most likely it can't be fit into the predefined map.
+                source->dry_run = 1; // not updating the library.
+                destroy_source(source);
+                return NULL;
+            }
         }
 
         /* Identify the dynamic segment and process it.  Specifically, we find
@@ -2217,14 +2246,16 @@ static source_t* process_file(const char *filename,
                                                  total_num_handled_relocs,
                                                  total_num_unhandled_relocs);
 
-                    /* Add the library to the dependency list. */
-                    if (source->num_lib_deps == source->lib_deps_size) {
-                        source->lib_deps_size += 10;
-                        source->lib_deps = REALLOC(source->lib_deps,
-                                                   source->lib_deps_size *
-                                                   sizeof(source_t *));
+                    if (dep != NULL) {
+                        /* Add the library to the dependency list. */
+                        if (source->num_lib_deps == source->lib_deps_size) {
+                            source->lib_deps_size += 10;
+                            source->lib_deps = REALLOC(source->lib_deps,
+                                    source->lib_deps_size *
+                                    sizeof(source_t *));
+                        }
+                        source->lib_deps[source->num_lib_deps++] = dep;
                     }
-                    source->lib_deps[source->num_lib_deps++] = dep;
                 }
                 break;
             case DT_JMPREL:
@@ -2477,7 +2508,7 @@ static source_t* process_file(const char *filename,
 
 void apriori(char **execs, int num_execs,
              char *output,
-             void (*report_library_size_in_memory)(
+             int (*report_library_size_in_memory)(
                  const char *name, off_t fsize),
              int (*get_next_link_address)(const char *name),
              int locals_only,
