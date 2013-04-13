@@ -121,7 +121,21 @@ static inline source_t* find_source(const char *name,
 
 static inline void add_to_sources(source_t *src) {
     src->next = sources;
+    src->prev = NULL;
+    if (sources)
+        sources->prev = src;
     sources = src;
+}
+
+static inline void del_from_sources(source_t *src) {
+    source_t *next = src->next;
+    source_t *prev = src->prev;
+    if (next)
+        next->prev = prev;
+    if (prev)
+        prev->next = next;
+    if (src == sources)
+        sources = next;
 }
 
 static void handle_range_error(range_error_t err,
@@ -802,6 +816,7 @@ static void destroy_source(source_t *source)
     if (source->output_is_dir > 1) {
         FREE(source->output);
     }
+    del_from_sources(source);
     FREE(source); /* init_source() */
 }
 
@@ -2073,7 +2088,7 @@ static void drop_sections(source_t *source)
 
 static source_t* process_file(const char *filename,
                               const char *output, int is_file,
-                              void (*report_library_size_in_memory)(
+                              int (*report_library_size_in_memory)(
                                   const char *name, off_t fsize),
                               unsigned (*get_next_link_address)(
                                   const char *name),
@@ -2164,7 +2179,13 @@ static source_t* process_file(const char *filename,
                 fsize = ceilX((max_vaddr - min_vaddr) * alloc_ratio, alloc_align);
             }
 
-            report_library_size_in_memory(source->name, fsize);
+            if (report_library_size_in_memory(source->name, fsize) != 0) {
+                // something wrong. not prelinking this.
+                // most likely it can't be fit into the predefined map.
+                source->dry_run = 1; // not updating the library.
+                destroy_source(source);
+                return NULL;
+            }
         }
 
         /* Identify the dynamic segment and process it.  Specifically, we find
@@ -2487,7 +2508,7 @@ static source_t* process_file(const char *filename,
 
 void apriori(char **execs, int num_execs,
              char *output,
-             void (*report_library_size_in_memory)(
+             int (*report_library_size_in_memory)(
                  const char *name, off_t fsize),
              int (*get_next_link_address)(const char *name),
              int locals_only,

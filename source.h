@@ -42,6 +42,7 @@ typedef struct {
 
 struct source_t {
     source_t *next;
+    source_t *prev;
 
     char *name;  /* full path name of this executable file */
     char *output; /* name of the output file or directory */

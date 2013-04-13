@@ -122,7 +122,7 @@ void pm_init(const char *file)
    in memory.  pm_report_library_size_in_memory() makes sure that the library
    fits in the slot provided by the prelink map.
 */
-void pm_report_library_size_in_memory(const char *name,
+int pm_report_library_size_in_memory(const char *name,
                                       off_t fsize)
 {
     char *x;
@@ -137,18 +137,22 @@ void pm_report_library_size_in_memory(const char *name,
             if(!strcmp(name, me->names[n])) {
                 off_t slot = me->next ? me->next->base : PRELINK_MAX;
                 slot -= me->base;
-                FAILIF(fsize > slot,
-                       "prelink map error: library %s@0x%08x is too big "
-                       "at %lld bytes, it runs %lld bytes into "
-                       "library %s@0x%08x!\n",
-                       me->names[0], me->base, fsize, fsize - slot,
-                       me->next->names[0], me->next->base);
-                return;
+                if (fsize > slot) {
+                    WARN("prelink map error: library %s@0x%08x is too big "
+                         "at %lld bytes, it runs %lld bytes into "
+                         "library %s@0x%08x!\n",
+                         me->names[0], me->base, fsize, fsize - slot,
+                         me->next->names[0], me->next->base);
+                    WARN("It will not be prelinked.\n");
+                    return -1;
+                }
+                return 0;
             }
         }
     }
     
     INFO("Library '%s' is not in prelink map.\n", name);
+    return -1;
 }
 
 unsigned pm_get_next_link_address(const char *lookup_name)
