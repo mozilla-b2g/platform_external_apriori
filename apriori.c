@@ -1085,6 +1085,8 @@ static int do_prelink(source_t *source,
            not locally defined and sym_source == NULL, then sym is not
            defined either. */
         GElf_Sym *found_sym = NULL, found_sym_mem;
+        GElf_Sym found_sym_dep;
+        GElf_Sym found_sym_def;
         const char *symname = NULL;
         int sym_is_local = 1;
         if (sym_idx) {
@@ -1135,8 +1137,6 @@ static int do_prelink(source_t *source,
           else if (!locals_only) {
             source_t *sym_source_dep = NULL;
             source_t *sym_source_def = NULL;
-            GElf_Sym found_sym_dep;
-            GElf_Sym found_sym_def;
             int n_found_in_dep = 0;
             int n_found_in_def = 0;
 
@@ -1163,8 +1163,8 @@ static int do_prelink(source_t *source,
                 sym_source = sym_source_dep;
                 found_sym = &found_sym_dep;
               } else if (n_found_in_def > 0) {
-                sym_source = sym_source_dep;
-                found_sym = &found_sym_dep;
+                sym_source = sym_source_def;
+                found_sym = &found_sym_def;
               }
             }
 
