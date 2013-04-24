@@ -34,7 +34,7 @@ static void print_dynamic_symbols(Elf *elf, const char *symtab_name);
 static unsigned s_next_link_addr;
 static off_t s_addr_increment;
 
-static void report_library_size_in_memory(const char *name, off_t fsize)
+static int report_library_size_in_memory(const char *name, off_t fsize)
 {
     ASSERT(s_next_link_addr != -1UL);
 	INFO("Setting next link address (current is at 0x%08x):\n",
@@ -61,6 +61,8 @@ static void report_library_size_in_memory(const char *name, off_t fsize)
 		 fsize);
 	INFO("\tnext prelink address: 0x%08x\n", s_next_link_addr);
 	ASSERT(!(s_next_link_addr % 4096)); /* New address must be page-aligned */
+
+    return 0;
 }
 
 static unsigned get_next_link_address(const char *name) {
@@ -185,7 +187,7 @@ int main(int argc, char **argv) {
         inc_addr = 0;
 	}
 
-    void (*func_report_library_size_in_memory)(const char *name, off_t fsize);
+    int (*func_report_library_size_in_memory)(const char *name, off_t fsize);
     unsigned (*func_get_next_link_address)(const char *name);
 
     if (prelinkmap != NULL) {

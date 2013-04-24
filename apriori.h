@@ -3,7 +3,7 @@
 
 void apriori(char **execs, int num_execs,
              char *output,
-             void (*set_next_link_address)(const char *name, off_t fsize),
+             int (*set_next_link_address)(const char *name, off_t fsize),
              int (*get_next_link_address)(const char *name),
              int locals_only,
              int dry_run,
