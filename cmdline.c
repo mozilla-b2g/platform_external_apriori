@@ -96,8 +96,8 @@ int get_options(int argc, char **argv,
 	ASSERT(mapfile); *mapfile = NULL;
 	ASSERT(output); *output = NULL;
     ASSERT(prelinkmap); *prelinkmap = NULL;
-    ASSERT(alloc_ratio); *alloc_ratio = 4;
-    ASSERT(alloc_align); *alloc_align = 0x200000; // 2MB
+    ASSERT(alloc_ratio); *alloc_ratio = 1;
+    ASSERT(alloc_align); *alloc_align = 0x10000; // 64KB
     int dirs_size = 0;
     int defaults_size = 0;
 
